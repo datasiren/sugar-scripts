@@ -1,0 +1,137 @@
+# this script just uninstalls the dependencies and application that goes under your argument name
+# I was really hating trying to uninstall python2, so I just made this to make it a bit easier next time
+
+# you do have to enter one at a time it can take more than 1 argument but it will not consider the arguments  
+# following the first one
+
+#!/bin/bash
+
+# Check if an argument is provided
+if [ -z "$1" ]; then
+  echo "Usage: $0 <package_or_file>"
+  exit 1
+fi
+
+# Function to check the operating system and set the package manager
+set_package_manager() {
+  if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    if command -v pacman &> /dev/null; then
+      PACKAGE_MANAGER="pacman"
+    elif command -v apt &> /dev/null; then
+      PACKAGE_MANAGER="apt"
+    elif command -v yum &> /dev/null; then
+      PACKAGE_MANAGER="yum"
+    elif command -v dnf &> /dev/null; then
+      PACKAGE_MANAGER="dnf"
+    else
+      echo "No compatible package manager found."
+      exit 1
+    fi
+  elif [[ "$OSTYPE" == "darwin"* ]]; then
+    if command -v brew &> /dev/null; then
+      PACKAGE_MANAGER="brew"
+    else
+      echo "Homebrew (brew) is not installed on macOS."
+      exit 1
+    fi
+  else
+    echo "Unsupported operating system."
+    exit 1
+  fi
+}
+
+# Function to check if a package can be uninstalled without breaking dependencies
+check_dependencies() {
+  local pkg=$1
+  echo "Checking dependencies for $pkg..."
+
+  # Skip if already checked
+  if [[ " ${CHECKED_PACKAGES[@]} " =~ " ${pkg} " ]]; then
+    return
+  fi
+
+  CHECKED_PACKAGES+=($pkg)
+
+  case $PACKAGE_MANAGER in
+    pacman)
+      local deps=$(pacman -Qi $pkg | grep "Required By" | awk -F ": " '{print $2}')
+      ;;
+    apt)
+      local deps=$(apt-cache rdepends $pkg | grep -v "^ " | tail -n +2)
+      ;;
+    yum|dnf)
+      local deps=$(repoquery --whatrequires --installed $pkg)
+      ;;
+    brew)
+      local deps=$(brew uses --installed $pkg)
+      ;;
+    *)
+      echo "Unsupported package manager."
+      exit 1
+      ;;
+  esac
+
+  if [ "$deps" != "None" ]; then
+    for dep in $deps; do
+      if [[ ! " ${DEPENDENCIES[@]} " =~ " ${dep} " ]]; then
+        echo "$pkg is required by $dep. Adding $dep to the list of dependencies."
+        DEPENDENCIES+=($dep)
+        check_dependencies $dep
+      fi
+    done
+  fi
+}
+
+# Function to uninstall a list of packages
+uninstall_packages() {
+  local packages=("$@")
+  echo "Uninstalling packages: ${packages[*]}"
+  case $PACKAGE_MANAGER in
+    pacman)
+      sudo pacman -R --noconfirm "${packages[@]}"
+      ;;
+    apt)
+      sudo apt remove -y "${packages[@]}"
+      ;;
+    yum)
+      sudo yum remove -y "${packages[@]}"
+      ;;
+    dnf)
+      sudo dnf remove -y "${packages[@]}"
+      ;;
+    brew)
+      brew uninstall "${packages[@]}"
+      ;;
+    *)
+      echo "Unsupported package manager."
+      exit 1
+      ;;
+  esac
+}
+
+# Set the package manager based on the operating system
+set_package_manager
+
+# Function to process a single package
+process_package() {
+  local package=$1
+  echo "Starting dependency check for $package..."
+  check_dependencies $package
+  DEPENDENCIES+=($package)
+}
+
+# Check if the argument is a file
+if [ -f "$1" ]; then
+  echo "Processing packages from file: $1"
+  while IFS= read -r package; do
+    process_package $package
+  done < "$1"
+else
+  PACKAGE=$1
+  process_package $PACKAGE
+fi
+
+# Uninstall all packages in one go
+uninstall_packages "${DEPENDENCIES[@]}"
+
+echo "Uninstallation complete."
